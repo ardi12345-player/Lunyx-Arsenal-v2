@@ -50,6 +50,7 @@ local targetModels = {}
 local destroyed = false
 local aimingHeld = false
 local renderConnection
+local renderBindName = "ArdiGitTraining_" .. tostring(localPlayer.UserId)
 local updateClock = 0
 local hitCount = 0
 local shotCount = 0
@@ -112,7 +113,7 @@ local targetFolder = Instance.new("Folder")
 targetFolder.Name = CONFIG.TargetFolderName
 targetFolder.Parent = Workspace
 
-local function createTrainingDummy(index, basePosition)
+local function createTrainingDummy(index, basePosition, movementRight)
     local model = Instance.new("Model")
     model.Name = string.format("Lunyx Training Dummy %02d", index)
     model.Parent = targetFolder
@@ -190,6 +191,7 @@ local function createTrainingDummy(index, basePosition)
         Origin = basePosition,
         Phase = index * 1.7,
         MoveDistance = 4 + index,
+        MoveRight = movementRight or Vector3.new(1, 0, 0),
     })
 
     return model
@@ -206,16 +208,31 @@ local function spawnTrainingTargets()
     if forward.Magnitude < 0.01 then
         forward = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
     end
+    if forward.Magnitude < 0.01 then
+        forward = Vector3.new(0, 0, -1)
+    end
     forward = forward.Unit
 
-    local right = Vector3.new(-forward.Z, 0, forward.X)
+    local right = Vector3.new(-forward.Z, 0, forward.X).Unit
     local offsets = {-12, 0, 12}
+
+    -- Raycast down to the actual floor. Using HumanoidRootPart.Y directly
+    -- can leave training dummies floating when the player spawns above ground.
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = {localPlayer.Character, targetFolder}
+    rayParams.IgnoreWater = true
 
     for index = 1, CONFIG.TargetCount do
         local horizontalOffset = offsets[index] or ((index - 2) * 12)
-        local position = root.Position + forward * 32 + right * horizontalOffset
-        position = Vector3.new(position.X, root.Position.Y, position.Z)
-        createTrainingDummy(index, position)
+        local candidate = root.Position + forward * 32 + right * horizontalOffset
+        local rayOrigin = Vector3.new(candidate.X, root.Position.Y + 100, candidate.Z)
+        local groundHit = Workspace:Raycast(rayOrigin, Vector3.new(0, -600, 0), rayParams)
+
+        -- The dummy root is its vertical center; this offset puts its feet on the hit surface.
+        local groundY = groundHit and groundHit.Position.Y or root.Position.Y - 2.8
+        local position = Vector3.new(candidate.X, groundY + 2.8, candidate.Z)
+        createTrainingDummy(index, position, right)
     end
 
     return true
@@ -573,9 +590,11 @@ local function createESP(target)
 
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "ArdiGitNPCInfo"
-    billboard.Adornee = target.Head
+    billboard.Adornee = target.Root
     billboard.Size = UDim2.fromOffset(190, 65)
-    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+    billboard.StudsOffsetWorldSpace = Vector3.new(0, 3.65, 0)
+    billboard.MaxDistance = 300
+    billboard.LightInfluence = 0
     billboard.AlwaysOnTop = true
     billboard.Enabled = true
     billboard.Parent = gui
@@ -732,10 +751,10 @@ local function performTrainingShot(camera)
 end
 
 connect(UserInputService.InputBegan, function(input, processed)
-    if input.KeyCode == Enum.KeyCode.RightShift and not processed then
-        main.Visible = not main.Visible
-    elseif input.UserInputType == Enum.UserInputType.MouseButton2 and not processed then
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
         aimingHeld = true
+    elseif input.KeyCode == Enum.KeyCode.RightShift and not processed then
+        main.Visible = not main.Visible
     elseif input.UserInputType == Enum.UserInputType.MouseButton1 and not processed then
         performTrainingShot(Workspace.CurrentCamera)
     end
@@ -790,14 +809,11 @@ local function updateMovingTargets(now)
     for _, target in ipairs(targetModels) do
         if target.Model and target.Model.Parent and target.Root and target.Root.Parent then
             local horizontalOffset = math.sin(now * 1.2 + target.Phase) * target.MoveDistance
-            local right = Vector3.new(1, 0, 0)
-            if playerRoot then
-                local look = playerRoot.CFrame.LookVector
-                right = Vector3.new(-look.Z, 0, look.X)
-                if right.Magnitude > 0.01 then right = right.Unit end
-            end
+            local position = target.Origin + target.MoveRight * horizontalOffset
 
-            local position = target.Origin + right * horizontalOffset
+            -- Keep the target at its ground-snapped spawn height.
+            position = Vector3.new(position.X, target.Origin.Y, position.Z)
+
             local facePosition = Vector3.new(lookAtPosition.X, position.Y, lookAtPosition.Z)
             if (facePosition - position).Magnitude < 0.1 then
                 facePosition = position + Vector3.new(0, 0, -1)
@@ -812,6 +828,10 @@ local function cleanup()
         return
     end
     destroyed = true
+
+    pcall(function()
+        RunService:UnbindFromRenderStep(renderBindName)
+    end)
 
     if renderConnection then
         renderConnection:Disconnect()
@@ -840,7 +860,11 @@ initialCharacter:WaitForChild("HumanoidRootPart")
 spawnTrainingTargets()
 refreshUI()
 
-renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
+pcall(function()
+    RunService:UnbindFromRenderStep(renderBindName)
+end)
+
+RunService:BindToRenderStep(renderBindName, Enum.RenderPriority.Camera.Value + 1, function(deltaTime)
     if destroyed then
         return
     end
