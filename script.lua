@@ -492,9 +492,7 @@ end
 connect(espMasterButton.Activated, function()
     CONFIG.ESPEnabled = not CONFIG.ESPEnabled
     refreshUI()
-    for _, target in ipairs(targetModels) do
-        updateESP(target)
-    end
+    status.Text = CONFIG.ESPEnabled and "STATUS: NPC ESP ENABLED" or "STATUS: NPC ESP DISABLED"
 end)
 
 connect(headESPButton.Activated, function()
